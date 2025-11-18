@@ -24,23 +24,10 @@ The `racecar_gym` package must be installed from source. Follow these steps:
 
 #### initial racecar_gym
 
+```bash
 git clone https://github.com/axelbr/racecar_gym.git
 cd racecar_gym
 pip install -e .
-
-#### Verify Installation
-
-After installation, verify that `racecar_gym` is properly installed:
-
-```bash
-python -c "import racecar_gym; print('racecar_gym installed successfully')"
-```
-
-Or run the check in `run_racecar_gym.py`:
-
-```bash
-python run_racecar_gym.py
-# Select option 6 to diagnose environments
 ```
 
 ### Installing Other Dependencies
@@ -50,6 +37,22 @@ Install the required Python packages:
 ```bash
 pip install -r requirements.txt
 ```
+
+#### Verify Installation
+
+After installation, verify that `racecar_gym` is properly installed:
+
+```bash
+python -c "import racecar_gym; print('racecar_gym installed successfully')"
+```
+
+Or run the check in `random_actor.py`:
+
+```bash
+python random_actor.py
+# Select option 6 to diagnose environments
+```
+
 
 
 ## Scripts
