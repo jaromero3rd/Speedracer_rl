@@ -22,24 +22,11 @@ This project contains scripts for:
 
 The `racecar_gym` package must be installed from source. Follow these steps:
 
-#### Option 1: Install from Local Source (Recommended)
+#### initial racecar_gym
 
-If you already have the `racecar_gym` directory in this project:
-
-```bash
-cd racecar_gym
-pip install -e .
-cd ..
-```
-
-#### Option 2: Install from GitHub
-
-```bash
 git clone https://github.com/axelbr/racecar_gym.git
 cd racecar_gym
 pip install -e .
-cd ..
-```
 
 #### Verify Installation
 
@@ -61,25 +48,9 @@ python run_racecar_gym.py
 Install the required Python packages:
 
 ```bash
-pip install numpy gymnasium pybullet scipy yamldataclassconfig nptyping pettingzoo
-```
-
-Or if you have a `requirements.txt`:
-
-```bash
 pip install -r requirements.txt
 ```
 
-### First-Time Setup
-
-On the first use of `racecar_gym`, the tracks are downloaded automatically. If you need to download them manually:
-
-```bash
-cd racecar_gym/models/scenes
-VERSION=v1.0.0
-wget https://github.com/axelbr/racecar_gym/releases/download/tracks-${VERSION}/all.zip
-unzip all.zip
-```
 
 ## Scripts
 
@@ -225,10 +196,8 @@ MultiAgent{TrackName}-v0
 
 The observation space is a dictionary containing sensor data:
 
-- `pose`: Box(6,) - Position (x, y, z) and orientation (roll, pitch, yaw)
 - `velocity`: Box(6,) - Translational and rotational velocity components
 - `acceleration`: Box(6,) - Translational and rotational acceleration components
-- `lidar`: Box(1080,) - LiDAR range scans (default: 1080 scans)
 - `rgb_camera`: Box(240, 320, 3) - RGB image from front camera (default: 240x320)
 
 ### Action Space

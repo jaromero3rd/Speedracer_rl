@@ -11,6 +11,11 @@ import select
 import tty
 import termios
 from collections import OrderedDict
+import os
+base_dir = os.path.dirname(os.path.abspath(__file__))
+racecar_gym_path = os.path.join(base_dir, 'racecar_gym')
+if racecar_gym_path not in sys.path:
+    sys.path.append(racecar_gym_path)
 
 
 def check_racecar_gym():
@@ -233,13 +238,19 @@ class KeyboardController:
         
         print("\nKeyboard Controls:")
         print("  Arrow Keys or WASD: Control steering and acceleration")
-        print("  W/Up Arrow: Forward (motor=1, steering=0)")
-        print("  S/Down Arrow: Backward (motor=-1, steering=0)")
-        print("  A/Left Arrow: Left (steering=-1)")
-        print("  D/Right Arrow: Right (steering=1)")
-        print("  Keys can be combined (e.g., W+D = forward+right)")
-        print("  Q: Quit episode")
-        print("  (Press keys to control, no need to press Enter)\n")
+        print("  W/Up Arrow: Forward (motor=1)")
+        print("  S/Down Arrow: Backward (motor=-1)")
+        print("  A/Left Arrow: Left steering (steering=-1)")
+        print("  D/Right Arrow: Right steering (steering=1)")
+        print("\n  KEY COMBINATIONS (hold multiple keys simultaneously):")
+        print("    WD or W+Right: Forward + Right turn")
+        print("    WA or W+Left: Forward + Left turn")
+        print("    WS or W+S: Forward + Backward (cancels to motor=0)")
+        print("    SD or S+Right: Backward + Right turn")
+        print("    SA or S+Left: Backward + Left turn")
+        print("    AD or A+D: Left + Right (cancels to steering=0)")
+        print("\n  Q: Quit episode")
+        print("  (Press and hold keys simultaneously for combinations, no need to press Enter)\n")
     
     def cleanup(self):
         """Restore terminal settings."""
@@ -261,7 +272,8 @@ class KeyboardController:
         keys = []
         try:
             # Read all available keys in the buffer
-            while select.select([sys.stdin], [], [], 0.0)[0]:
+            # Use a small timeout to capture multiple simultaneous key presses
+            while select.select([sys.stdin], [], [], 0.01)[0]:
                 key = sys.stdin.read(1)
                 if key:
                     keys.append(key)
@@ -351,8 +363,15 @@ class KeyboardController:
             i += 1
         
         # Remove keys that haven't been seen recently (key release detection)
-        # Keys timeout after 0.15 seconds of not being seen (increased for better combo support)
-        timeout = 0.15
+        # Increased timeout for better key combination support (WD, WA, WS, etc.)
+        # When multiple keys are active, use longer timeout to allow for async key presses
+        if len(self.active_keys) > 1:
+            # Longer timeout when multiple keys are pressed (for combinations)
+            timeout = 0.3
+        else:
+            # Shorter timeout for single keys (more responsive)
+            timeout = 0.2
+        
         keys_to_remove = []
         for key in self.active_keys:
             if key in self.key_times:
@@ -365,6 +384,7 @@ class KeyboardController:
                 del self.key_times[key]
         
         # Compute motor and steering from active keys
+        # This allows combinations like WD (forward+right), WA (forward+left), WS (forward+back)
         motor = 0.0
         steering = 0.0
         
@@ -385,10 +405,13 @@ class KeyboardController:
         self.motor = max(-1.0, min(1.0, motor))
         self.steering = max(-1.0, min(1.0, steering))
         
-        # Print debug info when keys change
-        if keys:
+        # Print debug info when keys change or when combinations are active
+        if keys or len(self.active_keys) > 1:
             active_str = ', '.join(sorted(self.active_keys)) if self.active_keys else 'none'
-            print(f"  [Keys: {active_str}] Steering: {self.steering:.2f}, Motor: {self.motor:.2f}")
+            combo_note = ""
+            if len(self.active_keys) > 1:
+                combo_note = " [COMBO]"
+            print(f"  [Keys: {active_str}{combo_note}] Steering: {self.steering:.2f}, Motor: {self.motor:.2f}")
         
         return self.quit_requested
     
@@ -475,11 +498,12 @@ def demo_keyboard_control():
         
         while not done and not controller.quit_requested and step_count < 5000:
             # Update controller and check for quit
+            # Call update() before getting action to ensure key combinations are captured
             controller.update()
             if controller.quit_requested:
                 break
             
-            # Get action from keyboard
+            # Get action from keyboard (includes all active key combinations)
             action = controller.get_action()
             
             # Step environment
@@ -489,11 +513,11 @@ def demo_keyboard_control():
             total_reward += reward
             step_count += 1
             
-            # Render
-            if step_count % 1 == 0:  # Render every step for responsive control
-                env.render()
+            # Render every step for responsive control
+            env.render()
             
-            # Small delay for visualization
+            # Small delay for visualization and to allow key input processing
+            # This delay also helps capture key combinations that arrive slightly asynchronously
             time.sleep(0.01)
         
         print(f"\nEpisode finished!")
