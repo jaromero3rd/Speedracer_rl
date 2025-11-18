@@ -6,22 +6,65 @@ Runs random actions in the racecar_gym environment for testing and data collecti
 
 import numpy as np
 import gymnasium
+import sys
+import os
+
+base_dir = os.path.dirname(os.path.abspath(__file__))
+racecar_gym_path = os.path.join(base_dir, 'racecar_gym')
+if racecar_gym_path not in sys.path:
+    sys.path.append(racecar_gym_path)
+
 import racecar_gym.envs.gym_api
 from time import sleep
 from collections import OrderedDict
 
+def map_possible_actions(i):
+    """
+    Map possible actions to the action space.
+    """
+    action_1 = OrderedDict()
+    action_1["motor"] = 1
+    action_1["steering"] = 0
 
-def random_policy(observation):
+    action_2 = OrderedDict()
+    action_2["motor"] = 1
+    action_2["steering"] = 1
+
+    action_3 = OrderedDict()
+    action_3["motor"] = 1
+    action_3["steering"] = -1
+
+    action_4 = OrderedDict()
+    action_4["motor"] = 0
+    action_4["steering"] = 0
+
+    action_5 = OrderedDict()
+    action_5["motor"] = 0
+    action_5["steering"] = 1
+
+    action_6 = OrderedDict()
+    action_6["motor"] = 0
+    action_6["steering"] = -1
+    actions = [action_1, action_2, action_3, action_4, action_5, action_6]
+    return actions[i]
+
+def truly_random_policy(observation):
     """
     Random policy - returns random actions.
     Actions are in the range [-1, 1] for steering and acceleration.
     """
     steering = np.random.uniform(-1, 1)
-    acceleration = np.array([1])
+    acceleration = np.random.uniform(-1, 1)
     ordered_dict = OrderedDict()
     ordered_dict["motor"] = acceleration
     ordered_dict["steering"] = steering
     return ordered_dict
+
+def our_random_policy(observation):
+    """
+    Our random policy - returns a random action from the possible actions.
+    """
+    return map_possible_actions(np.random.randint(0, 6))
 
 
 
@@ -64,8 +107,11 @@ def run_random_actor(env_name='SingleAgentAustria-v0', num_episodes=5, max_steps
         while not done and step_count < max_steps:
             # Sample random action from action space
             # action = env.action_space.sample()
-            action = random_policy(obs)
-            print(action)
+            
+            # action = truly_random_policy(obs)
+
+            action = our_random_policy(obs)
+            # print(action)
             
             # Step environment
             obs, reward, terminated, truncated, info = env.step(action)
