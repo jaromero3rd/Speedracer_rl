@@ -53,6 +53,10 @@ python random_actor.py
 # Select option 6 to diagnose environments
 ```
 
+### Config file addition
+
+replace the /racecar_gym/scenarios
+with the saved scenarios in Speedracer_rl file
 
 
 ## Scripts
