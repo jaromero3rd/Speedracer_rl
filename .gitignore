@@ -26,6 +26,7 @@ share/python-wheels/
 *.egg
 MANIFEST
 .DS_Store
+runs/
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
@@ -148,6 +149,7 @@ venv.bak/
 # Spyder project settings
 .spyderproject
 .spyproject
+
 
 # Rope project settings
 .ropeproject
