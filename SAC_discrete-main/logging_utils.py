@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Optional, Dict, Any
 
 
-def load_video_to_tensor(video_path: str, max_frames: int = 100) -> Optional[torch.Tensor]:
+def load_video_to_tensor(video_path: str, max_frames: int = 1000) -> Optional[torch.Tensor]:
     """
     Load a video file and convert it to a tensor format for TensorBoard.
     Returns a tensor of shape (1, T, C, H, W) where:
@@ -17,7 +17,7 @@ def load_video_to_tensor(video_path: str, max_frames: int = 100) -> Optional[tor
     
     Args:
         video_path: Path to the video file
-        max_frames: Maximum number of frames to load (default: 100)
+        max_frames: Maximum number of frames to load (default: 1000, increased to capture full episodes)
     
     Returns:
         Video tensor of shape (1, T, C, H, W) or None if loading fails
@@ -29,9 +29,32 @@ def load_video_to_tensor(video_path: str, max_frames: int = 100) -> Optional[tor
         return None
     
     if not os.path.exists(video_path):
+        print(f"Warning: Video file does not exist: {video_path}")
         return None
     
+    # Wait a bit to ensure file is fully written (check file size stability)
+    import time
+    prev_size = -1
+    for _ in range(10):  # Check up to 10 times
+        try:
+            current_size = os.path.getsize(video_path)
+            if current_size == prev_size and current_size > 0:
+                break
+            prev_size = current_size
+            time.sleep(0.1)
+        except OSError:
+            time.sleep(0.1)
+    
     cap = cv2.VideoCapture(video_path)
+    
+    if not cap.isOpened():
+        print(f"Warning: Failed to open video file: {video_path}")
+        return None
+    
+    # Get video properties
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    frame_count_total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    
     frames = []
     
     frame_count = 0
@@ -165,6 +188,7 @@ def log_video(
     import time
     
     # RecordVideo creates subdirectories like video/rl-video-episode-0/, video/rl-video-episode-10/, etc.
+    # Or files like episode-episode-1.mp4, episode-episode-11.mp4, etc.
     # Search recursively for mp4 files
     mp4list = []
     
@@ -189,18 +213,28 @@ def log_video(
             print(f"  Directory exists. Contents: {os.listdir(video_dir)}")
         return False
     
-    # Get the most recent video (by modification time)
-    try:
-        mp4 = max(mp4list, key=os.path.getmtime)
-    except (OSError, ValueError):
-        # Fallback to creation time if modification time fails
-        try:
-            mp4 = max(mp4list, key=os.path.getctime)
-        except (OSError, ValueError):
-            # If both fail, just use the first one
-            mp4 = mp4list[0]
+    # Try to find video matching the episode number first
+    # RecordVideo creates files like: episode-episode-{episode_num}.mp4
+    episode_video = None
+    for mp4 in mp4list:
+        # Check if filename contains the episode number
+        if f"episode-{episode}" in os.path.basename(mp4) or f"-{episode}." in os.path.basename(mp4):
+            episode_video = mp4
+            break
     
-    print(f"Found video file: {mp4} (episode {episode})")
+    # If no exact match, get the most recent video (by modification time)
+    if episode_video is None:
+        try:
+            episode_video = max(mp4list, key=os.path.getmtime)
+        except (OSError, ValueError):
+            # Fallback to creation time if modification time fails
+            try:
+                episode_video = max(mp4list, key=os.path.getctime)
+            except (OSError, ValueError):
+                # If both fail, just use the first one
+                episode_video = mp4list[0]
+    
+    mp4 = episode_video
     
     # Load video and convert to tensor format
     video_tensor = load_video_to_tensor(mp4)
@@ -225,25 +259,35 @@ def log_video(
             if T == 0:
                 raise ValueError(f"Video has no frames")
             
+            # Calculate actual FPS from video if available
+            try:
+                import cv2
+                cap = cv2.VideoCapture(mp4)
+                video_fps = cap.get(cv2.CAP_PROP_FPS)
+                cap.release()
+                if video_fps > 0:
+                    fps = int(video_fps)
+            except:
+                pass  # Use default fps
+            
             # Log video to TensorBoard
             # PyTorch's add_video expects: (N, T, C, H, W) format
             # Videos appear in the "IMAGES" tab in TensorBoard
-            tag = f"Videos/Episode_{episode}"
-            writer.add_video(tag, video_tensor, global_step=episode, fps=fps)
+            # IMPORTANT: Use a simple tag name without slashes for better compatibility
+            tag = f"Episode_{episode}"
             
-            # Also log the first frame as an image for verification
-            first_frame = video_tensor[0, 0, :, :, :]  # (C, H, W)
-            writer.add_image(f"Videos/FirstFrame_Episode_{episode}", first_frame, global_step=episode)
+            # Ensure FPS is reasonable (TensorBoard can have issues with very low or very high FPS)
+            if fps <= 0:
+                fps = 4  # Default FPS
+            if fps > 30:
+                fps = 30  # Cap at 30 FPS for TensorBoard compatibility
+            
+            # Log video - use the 'Videos' namespace in the tag
+            writer.add_video(f"Videos/{tag}", video_tensor, global_step=episode, fps=fps)
             
             # Flush to ensure data is written
             writer.flush()
             
-            print(f"✓ Logged video to TensorBoard: {mp4}")
-            print(f"  Episode: {episode}, Shape: {video_tensor.shape}, FPS: {fps}")
-            print(f"  Tag: {tag}")
-            print(f"  Tensor min: {video_tensor.min().item():.3f}, max: {video_tensor.max().item():.3f}")
-            print(f"  Note: Videos appear in the 'IMAGES' tab in TensorBoard")
-            print(f"  Look for tags starting with 'Videos/' in the IMAGES tab")
             return True
         except Exception as e:
             print(f"Warning: Failed to log video to TensorBoard: {e}")

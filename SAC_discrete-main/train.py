@@ -11,6 +11,8 @@ from collections import deque
 import torch
 import argparse
 import os
+import glob
+import time
 from buffer import ReplayBuffer
 from utils import save, collect_random
 import random
@@ -43,6 +45,11 @@ def train(config):
     torch.manual_seed(config.seed)
     
     # Create environment with render_mode for video recording
+    #######################################################################################################################
+
+    # NEED TO BE ABLE TO TOGGLE ENVIROMENTS, I THINK THIS WILL NEED TO HAPPEN BY TOGGELING CONFIG FILES?
+
+    #######################################################################################################################
     if config.log_video:
         env = gym.make(config.env, render_mode='rgb_array')
     else:
@@ -63,6 +70,12 @@ def train(config):
     # Log hyperparameters
     log_hyperparameters(writer, config)
     
+    #######################################################################################################################
+
+    # NEED SOMETHING HERE TO MAKE EITHER THE CARTPOLE AGENT OR THE RACECAR_GYM AGENT
+    # NEED Z EMBEDDING SIZE FOR THE STATE_SIZE. WE DEFINE THE ACTION_SPACE AS WELL HERE (6 ACTIONS)
+
+    #######################################################################################################################
     agent = SAC(state_size=env.observation_space.shape[0],
                      action_size=env.action_space.n,
                      device=device)
@@ -96,11 +109,14 @@ def train(config):
         episode_steps = 0
         rewards = 0
         while True:
-            # print("here")
+            
             action = agent.get_action(state)
             steps += 1
             next_state, reward, terminated, truncated, info = env.step(action)
-            done = terminated or truncated  # Combine terminated and truncated
+            done = terminated or truncated 
+            ## WE GET TO ADD IN THIS LINE THE REWARDS FUNCTIONS DEPENDENT ON STATES AND EVEN ADD IN OUR STATE -> z LATENT SPACE EMBEDDING FUNCTION HERE
+            ## IMPLEMENT AN IF STATEMENT HERE BASED ON IF WE ARE TRAINING CARTPOLE OR RACECAR_GYM
+
             buffer.add(state, action, reward, next_state, done)
             policy_loss, alpha_loss, bellmann_error1, bellmann_error2, current_alpha = agent.learn(steps, buffer.sample(), gamma=0.99)
             state = next_state
@@ -130,13 +146,33 @@ def train(config):
         )
 
         if (i % 10 == 0) and config.log_video:
-            # Close the video recorder to ensure the video is saved
-            if hasattr(env, 'close_video_recorder'):
-                env.close_video_recorder()
-            # Small delay to ensure video file is written
-            import time
-            time.sleep(1.0)
-            log_video(writer, i, video_dir=video_dir)
+            # RecordVideo automatically closes and saves video when episode ends
+            # But we need to ensure the file is fully written before reading it
+            
+            # Wait for video file to be written (check file size stability)
+            video_written = False
+            for attempt in range(20):  # Wait up to 2 seconds
+                # Look for the video file that should have been created for this episode
+                pattern = os.path.join(video_dir, f"**/episode-episode-{i}.mp4")
+                video_files = glob.glob(pattern, recursive=True)
+                if len(video_files) > 0:
+                    # Check if file size is stable (not being written)
+                    try:
+                        video_path = video_files[0]
+                        size1 = os.path.getsize(video_path)
+                        time.sleep(0.1)
+                        size2 = os.path.getsize(video_path)
+                        if size1 == size2 and size1 > 0:
+                            video_written = True
+                            break
+                    except OSError:
+                        pass
+                time.sleep(0.1)
+            
+            if video_written:
+                # Additional wait to ensure video is fully flushed
+                time.sleep(1.0)
+                log_video(writer, i, video_dir=video_dir)
 
         if i % config.save_every == 0:
             save(config, save_name="SAC_discrete", model=agent.actor_local, ep=0)
