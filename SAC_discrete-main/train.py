@@ -35,6 +35,10 @@ def get_config():
     parser.add_argument("--log_dir", type=str, default="./logs", help="Directory for TensorBoard logs, default: ./logs")
     parser.add_argument("--save_every", type=int, default=100, help="Saves the network every x epochs, default: 25")
     parser.add_argument("--batch_size", type=int, default=256, help="Batch size, default: 256")
+    parser.add_argument("--learning_rate", type=float, default=5e-4, help="Learning rate, default: 5e-4")
+    parser.add_argument("--entropy_bonus", type=str, default="None", help="Fixed entropy bonus (alpha). 'None' = learnable, default: None")
+    parser.add_argument("--epsilon", type=float, default=0.0, help="Epsilon for epsilon-greedy exploration, default: 0.0")
+    parser.add_argument("--obs_buffer_max_len", type=int, default=4, help="Observation buffer length, default: 4")
     
     args = parser.parse_args()
     return args
@@ -63,7 +67,7 @@ def train(config):
     steps = 0
     average10 = deque(maxlen=10)
 
-    obs_buffer_max_len = 10
+    obs_buffer_max_len = getattr(config, 'obs_buffer_max_len', 4)
     obs_buffer = deque(maxlen=obs_buffer_max_len)
     total_steps = 0
     
@@ -80,9 +84,20 @@ def train(config):
 
     #######################################################################################################################
     state_size_flat = env.observation_space.shape[0] * obs_buffer_max_len
+    
+    # Get hyperparameters from config (with defaults)
+    learning_rate = getattr(config, 'learning_rate', 5e-4)
+    entropy_bonus_str = getattr(config, 'entropy_bonus', 'None')
+    # Convert string "None" to actual None
+    entropy_bonus = None if entropy_bonus_str == "None" or entropy_bonus_str is None else float(entropy_bonus_str)
+    epsilon = getattr(config, 'epsilon', 0.0)
+    
     agent = SAC(state_size=state_size_flat,
                      action_size=env.action_space.n,
-                     device=device)
+                     device=device,
+                     learning_rate=learning_rate,
+                     entropy_bonus=entropy_bonus,
+                     epsilon=epsilon)
 
     buffer = ReplayBuffer(buffer_size=config.buffer_size, batch_size=config.batch_size, device=device)
     
@@ -164,6 +179,14 @@ def train(config):
             steps=steps,
             buffer_size=buffer.__len__()
         )
+        
+        # Update hparams metric with final average reward (for HPARAMS tab)
+        if i == config.episodes:
+            try:
+                # Update the hparam metric with final average reward
+                writer.add_scalar("hparam/final_avg_reward", np.mean(average10), i)
+            except:
+                pass
 
         if (i % 10 == 0) and config.log_video:
             # RecordVideo automatically closes and saves video when episode ends

@@ -121,7 +121,45 @@ def log_hyperparameters(writer: SummaryWriter, config: Any) -> None:
         "batch_size": config.batch_size,
         "seed": config.seed,
     }
-    writer.add_hparams(hparams, {})
+    
+    # Add hyperparameters if they exist in config
+    if hasattr(config, 'learning_rate'):
+        hparams["learning_rate"] = config.learning_rate
+    if hasattr(config, 'entropy_bonus'):
+        ent_bonus = config.entropy_bonus
+        if ent_bonus == "None" or ent_bonus is None:
+            hparams["entropy_bonus"] = "learnable"
+        else:
+            hparams["entropy_bonus"] = float(ent_bonus)
+    if hasattr(config, 'epsilon'):
+        hparams["epsilon"] = config.epsilon
+    if hasattr(config, 'obs_buffer_max_len'):
+        hparams["obs_buffer_max_len"] = config.obs_buffer_max_len
+    
+    # Log hyperparameters to TensorBoard
+    # TensorBoard's add_hparams requires a metrics dict (even if empty)
+    # The HPARAMS tab will appear when you have multiple runs to compare
+    # For now, we'll use a placeholder metric that will be updated during training
+    metrics = {
+        "hparam/final_avg_reward": 0.0,  # Placeholder - will be updated at end of training
+    }
+    
+    try:
+        writer.add_hparams(hparams, metrics)
+    except Exception as e:
+        print(f"Warning: Failed to log hyperparameters to TensorBoard: {e}")
+    
+    # Also log hyperparameters as text for easy viewing (always visible)
+    hparams_str = "\n".join([f"  {k}: {v}" for k, v in sorted(hparams.items())])
+    writer.add_text("Hyperparameters/Config", hparams_str, 0)
+    
+    # Log each hyperparameter individually as scalars for easy filtering
+    for key, value in hparams.items():
+        # Convert non-numeric values to strings for text logging
+        if isinstance(value, (int, float)):
+            writer.add_scalar(f"Hyperparameters/{key}", value, 0)
+        else:
+            writer.add_text(f"Hyperparameters/{key}", str(value), 0)
 
 
 def log_episode_metrics(

@@ -29,6 +29,8 @@ MANIFEST
 runs/
 logs/
 fovean/
+SAC_discrete-main/grid_search_logs/
+SAC_discrete-main/trained_models/
 
 # PyInstaller
 #  Usually these files are written by a python script from a template

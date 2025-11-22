@@ -14,7 +14,10 @@ class SAC(nn.Module):
     def __init__(self,
                         state_size,
                         action_size,
-                        device
+                        device,
+                        learning_rate=5e-4,
+                        entropy_bonus=None,
+                        epsilon=0.0
                 ):
         """Initialize an Agent object.
         
@@ -22,33 +25,41 @@ class SAC(nn.Module):
         ======
             state_size (int): dimension of each state
             action_size (int): dimension of each action
-            random_seed (int): random seed
+            device: torch device
+            learning_rate (float): learning rate for optimizers
+            entropy_bonus (float): fixed entropy bonus (alpha). If None, uses learnable alpha
+            epsilon (float): epsilon for epsilon-greedy exploration (0.0 = no epsilon-greedy)
         """
         super(SAC, self).__init__()
         self.state_size = state_size
         self.action_size = action_size
-
         self.device = device
+        self.epsilon = epsilon
         
         self.gamma = 0.99
         self.tau = 1e-2
         hidden_size = 256
-        learning_rate = 5e-4
         self.clip_grad_param = 1
 
         self.target_entropy = -action_size  # -dim(A)
 
-        self.log_alpha = torch.tensor([0.0], requires_grad=True)
-        self.alpha = self.log_alpha.exp().detach()
-        self.alpha_optimizer = optim.Adam(params=[self.log_alpha], lr=learning_rate) 
+        # Handle entropy bonus (alpha)
+        if entropy_bonus is not None:
+            # Use fixed entropy bonus
+            self.log_alpha = None
+            self.alpha = torch.tensor([entropy_bonus], requires_grad=False)
+            self.alpha_optimizer = None
+        else:
+            # Use learnable entropy bonus
+            self.log_alpha = torch.tensor([0.0], requires_grad=True)
+            self.alpha = self.log_alpha.exp().detach()
+            self.alpha_optimizer = optim.Adam(params=[self.log_alpha], lr=learning_rate) 
                 
         # Actor Network 
-
         self.actor_local = Actor(state_size, action_size, hidden_size).to(device)
         self.actor_optimizer = optim.Adam(self.actor_local.parameters(), lr=learning_rate)     
         
         # Critic Network (w/ Target Network)
-
         self.critic1 = Critic(state_size, action_size, hidden_size, 2).to(device)
         self.critic2 = Critic(state_size, action_size, hidden_size, 1).to(device)
         
@@ -64,8 +75,18 @@ class SAC(nn.Module):
         self.critic2_optimizer = optim.Adam(self.critic2.parameters(), lr=learning_rate) 
 
     
-    def get_action(self, state):
-        """Returns actions for given state as per current policy."""
+    def get_action(self, state, training=True):
+        """Returns actions for given state as per current policy.
+        
+        Args:
+            state: state array
+            training: if True, applies epsilon-greedy exploration
+        """
+        # EPSILON GREEDY EXPLORATION
+        if training and self.epsilon > 0.0 and np.random.random() < self.epsilon:
+            # Random action
+            return np.random.randint(0, self.action_size)
+        
         # Ensure state is 1D and convert to tensor
         if isinstance(state, np.ndarray):
             state = state.flatten()
@@ -123,12 +144,17 @@ class SAC(nn.Module):
         actor_loss.backward()
         self.actor_optimizer.step()
         
-        # Compute alpha loss
-        alpha_loss = - (self.log_alpha.exp() * (log_pis.cpu() + self.target_entropy).detach().cpu()).mean()
-        self.alpha_optimizer.zero_grad()
-        alpha_loss.backward()
-        self.alpha_optimizer.step()
-        self.alpha = self.log_alpha.exp().detach()
+        # Compute alpha loss (only if using learnable alpha)
+        if self.log_alpha is not None:
+            alpha_loss = - (self.log_alpha.exp() * (log_pis.cpu() + self.target_entropy).detach().cpu()).mean()
+            self.alpha_optimizer.zero_grad()
+            alpha_loss.backward()
+            self.alpha_optimizer.step()
+            self.alpha = self.log_alpha.exp().detach()
+            alpha_loss_value = alpha_loss.item()
+        else:
+            # Fixed alpha, no loss to compute
+            alpha_loss_value = 0.0
 
         # ---------------------------- update critic ---------------------------- #
         # Get predicted next-state actions and Q values from target models
@@ -164,7 +190,7 @@ class SAC(nn.Module):
         self.soft_update(self.critic1, self.critic1_target)
         self.soft_update(self.critic2, self.critic2_target)
         
-        return actor_loss.item(), alpha_loss.item(), critic1_loss.item(), critic2_loss.item(), current_alpha
+        return actor_loss.item(), alpha_loss_value, critic1_loss.item(), critic2_loss.item(), current_alpha
 
     def soft_update(self, local_model , target_model):
         """Soft update model parameters.
