@@ -5,6 +5,7 @@ import torch.nn as nn
 from torch.nn.utils import clip_grad_norm_
 from networks import Critic, Actor
 import copy
+import numpy as np
 
 
 class SAC(nn.Module):
@@ -53,10 +54,10 @@ class SAC(nn.Module):
         
         assert self.critic1.parameters() != self.critic2.parameters()
         
-        self.critic1_target = Critic(state_size, action_size, hidden_size).to(device)
+        self.critic1_target = Critic(state_size, action_size, hidden_size, 2).to(device)
         self.critic1_target.load_state_dict(self.critic1.state_dict())
 
-        self.critic2_target = Critic(state_size, action_size, hidden_size).to(device)
+        self.critic2_target = Critic(state_size, action_size, hidden_size, 1).to(device)
         self.critic2_target.load_state_dict(self.critic2.state_dict())
 
         self.critic1_optimizer = optim.Adam(self.critic1.parameters(), lr=learning_rate)
@@ -65,13 +66,30 @@ class SAC(nn.Module):
     
     def get_action(self, state):
         """Returns actions for given state as per current policy."""
+        # Ensure state is 1D and convert to tensor
+        if isinstance(state, np.ndarray):
+            state = state.flatten()
         state = torch.from_numpy(state).float().to(self.device)
+        
+        # Add batch dimension if needed (for single state)
+        if state.dim() == 1:
+            state = state.unsqueeze(0)
         
         with torch.no_grad():
             action = self.actor_local.get_det_action(state)
-        # Convert to numpy and ensure it's a scalar for discrete actions
-        action_np = action.numpy()
-        return action_np.item() if action_np.ndim == 0 else action_np
+        
+        # Convert tensor to scalar integer for discrete actions
+        # get_det_action returns a tensor, we need to extract the scalar value
+        if isinstance(action, torch.Tensor):
+            # If tensor has shape [1] or (1,), use item() to get scalar
+            if action.numel() == 1:
+                action = action.item()
+            else:
+                # If it's a 1D tensor with one element, take the first element
+                action = action[0].item()
+        
+        # Ensure it's a Python int (not numpy int)
+        return int(action)
 
     def calc_policy_loss(self, states, alpha):
         _, action_probs, log_pis = self.actor_local.evaluate(states)

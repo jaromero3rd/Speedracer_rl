@@ -27,7 +27,7 @@ from logging_utils import (
 def get_config():
     parser = argparse.ArgumentParser(description='RL')
     parser.add_argument("--run_name", type=str, default="SAC", help="Run name, default: SAC")
-    parser.add_argument("--env", type=str, default="CartPole-v0", help="Gym environment name, default: CartPole-v0")
+    parser.add_argument("--env", type=str, default="CartPole-v1", help="Gym environment name, default: CartPole-v0")
     parser.add_argument("--episodes", type=int, default=100, help="Number of episodes, default: 100")
     parser.add_argument("--buffer_size", type=int, default=100_000, help="Maximal training dataset size, default: 100_000")
     parser.add_argument("--seed", type=int, default=1, help="Seed, default: 1")
@@ -62,6 +62,9 @@ def train(config):
     
     steps = 0
     average10 = deque(maxlen=10)
+
+    obs_buffer_max_len = 10
+    obs_buffer = deque(maxlen=obs_buffer_max_len)
     total_steps = 0
     
     # Create TensorBoard writer
@@ -76,13 +79,14 @@ def train(config):
     # NEED Z EMBEDDING SIZE FOR THE STATE_SIZE. WE DEFINE THE ACTION_SPACE AS WELL HERE (6 ACTIONS)
 
     #######################################################################################################################
-    agent = SAC(state_size=env.observation_space.shape[0],
+    state_size_flat = env.observation_space.shape[0] * obs_buffer_max_len
+    agent = SAC(state_size=state_size_flat,
                      action_size=env.action_space.n,
                      device=device)
 
     buffer = ReplayBuffer(buffer_size=config.buffer_size, batch_size=config.batch_size, device=device)
     
-    collect_random(env=env, dataset=buffer, num_samples=10000)
+    collect_random(env=env, dataset=buffer, num_samples=10000, obs_buffer_max_len=obs_buffer_max_len)
     
     # Save videos to a subdirectory within the TensorBoard log directory
     video_dir = os.path.join(log_path, 'videos')
@@ -105,20 +109,36 @@ def train(config):
             config.log_video = 0
 
     for i in range(1, config.episodes+1):
-        state, info = env.reset()
+        obs, info = env.reset()
+        
+        # Reinitialize observation buffer for new episode
+        obs_buffer.clear()
+        for _ in range(obs_buffer_max_len):
+            obs_buffer.append(obs)
+        state = np.stack(obs_buffer, axis=0).flatten(order="C")
+  
+
         episode_steps = 0
         rewards = 0
         while True:
-            
             action = agent.get_action(state)
             steps += 1
-            next_state, reward, terminated, truncated, info = env.step(action)
+            next_obs, reward, terminated, truncated, info = env.step(action)
+
+            obs_buffer.append(next_obs)
+            next_state = np.stack(obs_buffer, axis=0).flatten(order="C")
+
             done = terminated or truncated 
             ## WE GET TO ADD IN THIS LINE THE REWARDS FUNCTIONS DEPENDENT ON STATES AND EVEN ADD IN OUR STATE -> z LATENT SPACE EMBEDDING FUNCTION HERE
             ## IMPLEMENT AN IF STATEMENT HERE BASED ON IF WE ARE TRAINING CARTPOLE OR RACECAR_GYM
+            # print(f"enviroment reward: {reward}")
+            # print(f"state: {state}")
+            # reward = reward - (state[0] - 1)**2
+            # print(f"Our Reward : {reward}")
 
             buffer.add(state, action, reward, next_state, done)
             policy_loss, alpha_loss, bellmann_error1, bellmann_error2, current_alpha = agent.learn(steps, buffer.sample(), gamma=0.99)
+            obs = next_obs
             state = next_state
             rewards += reward
             episode_steps += 1
