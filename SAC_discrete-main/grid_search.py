@@ -88,10 +88,10 @@ def main():
     args = parser.parse_args()
     
     # Define hyperparameter grids
-    obs_buffer_max_lens = [4, 8, 10]
+    obs_buffer_max_lens = [2, 8, 16]
     learning_rates = [1e-4, 5e-4, 1e-3]
-    entropy_bonuses = [None, 0.1, 0.2]  # None = learnable
-    epsilons = [0.0, 0.1, 0.2]
+    entropy_bonuses = [None, 0.2, 0.4]  # None = learnable
+    epsilons = [0.0, 0.2, 0.4]
     
     # Create grid of all combinations
     grid = list(itertools.product(

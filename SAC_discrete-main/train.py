@@ -148,8 +148,14 @@ def train(config):
             ## IMPLEMENT AN IF STATEMENT HERE BASED ON IF WE ARE TRAINING CARTPOLE OR RACECAR_GYM
             # print(f"enviroment reward: {reward}")
             # print(f"state: {state}")
-            # reward = reward - (state[0] - 1)**2
-            # print(f"Our Reward : {reward}")
+
+            #Found that the reward function was best when it followed a normal distribution
+            #It helps with giving signal far away without highjacking the reward function (found + was better than - for some reason)
+            eps = 1e-5
+            mean = 1
+            std = 1
+
+            reward = reward + np.exp(-(state[0] - mean)**2 / (2 * std**2))
 
             buffer.add(state, action, reward, next_state, done)
             policy_loss, alpha_loss, bellmann_error1, bellmann_error2, current_alpha = agent.learn(steps, buffer.sample(), gamma=0.99)
