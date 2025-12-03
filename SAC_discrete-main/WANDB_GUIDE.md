@@ -158,9 +158,42 @@ wandb login
 ```
 
 ### Videos not uploading
-- Check that `--log_video 1` is set
-- Verify moviepy is installed: `pip install moviepy`
-- Videos are logged every 10 episodes
+
+If videos are not appearing in wandb:
+
+**Option 1: Check the logs**
+```bash
+python train.py --env CartPole-v1 --log_video 1 --episodes 30
+```
+Look for messages like:
+- `✓ Video logged to wandb for episode 10`
+- `Found video file: ...`
+
+If you see "No video files found", try these fixes:
+
+**Option 2: Use the alternative script**
+```bash
+python train_wandb_video.py --env CartPole-v1 --episodes 30 --video_freq 10
+```
+This uses wandb's built-in gym monitoring for more reliable video capture.
+
+**Option 3: Manual debugging**
+1. Check that moviepy is installed: `pip install moviepy`
+2. Check that videos are being created in `./wandb_videos/` directory
+3. Verify the video files aren't empty: `ls -lh ./wandb_videos/`
+4. Try increasing the wait time for video writing
+
+**Option 4: Check video format**
+```bash
+# Make sure you have ffmpeg installed (required for video encoding)
+# macOS:
+brew install ffmpeg
+
+# Linux:
+sudo apt-get install ffmpeg
+
+# Windows: Download from https://ffmpeg.org/
+```
 
 ### Too many runs in project
 You can delete old runs from the wandb UI or use:
