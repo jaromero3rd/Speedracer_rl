@@ -1,30 +1,33 @@
-import gymnasium as gym
-from gymnasium.wrappers.record_video import RecordVideo
+"""
+Alternative training script with wandb's built-in gym video recording.
+This version uses wandb.gym.monitor() for more reliable video logging.
 
+Usage:
+    python train_wandb_video.py --env CartPole-v1 --episodes 100
+"""
+
+import gymnasium as gym
 import numpy as np
 from collections import deque
 import torch
 import argparse
 import os
-import glob
-import time
+import random
 from buffer import ReplayBuffer
 from utils import save, collect_random
-import random
 from agent import SAC
-
 import wandb
 
 
 def get_config():
-    parser = argparse.ArgumentParser(description="RL")
+    parser = argparse.ArgumentParser(description="RL with Wandb Video")
     parser.add_argument(
         "--run_name", type=str, default="SAC", help="Run name, default: SAC"
     )
     parser.add_argument(
         "--env",
         type=str,
-        default="CartPole-v1",
+        default="CartPole-v0",
         help="Gym environment name, default: CartPole-v1",
     )
     parser.add_argument(
@@ -38,10 +41,10 @@ def get_config():
     )
     parser.add_argument("--seed", type=int, default=1, help="Seed, default: 1")
     parser.add_argument(
-        "--log_video",
+        "--video_freq",
         type=int,
-        default=0,
-        help="Log agent behaviour to wandb when set to 1, default: 0",
+        default=10,
+        help="Record video every N episodes, default: 10",
     )
     parser.add_argument(
         "--wandb_project",
@@ -69,9 +72,9 @@ def get_config():
     )
     parser.add_argument(
         "--entropy_bonus",
-        type=float,
-        default=0.2,
-        help="Fixed entropy bonus (alpha) default: 0.2",
+        type=str,
+        default="None",
+        help="Fixed entropy bonus (alpha). 'None' = learnable, default: None",
     )
     parser.add_argument(
         "--epsilon",
@@ -82,8 +85,8 @@ def get_config():
     parser.add_argument(
         "--obs_buffer_max_len",
         type=int,
-        default=16,
-        help="Observation buffer length, default: 16",
+        default=4,
+        help="Observation buffer length, default: 4",
     )
 
     args = parser.parse_args()
@@ -95,13 +98,8 @@ def train(config):
     random.seed(config.seed)
     torch.manual_seed(config.seed)
 
-    if config.log_video:
-        env = gym.make(config.env, render_mode="rgb_array")
-    else:
-        env = gym.make(config.env)
-
-    # Note: env.seed() and env.action_space.seed() are deprecated in new gymnasium
-    # Seed is now handled via gym.make() or through the environment's reset() method
+    # Create environment with render_mode for video
+    env = gym.make(config.env, render_mode="rgb_array")
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -112,7 +110,7 @@ def train(config):
     obs_buffer = deque(maxlen=obs_buffer_max_len)
     total_steps = 0
 
-    # Initialize Weights & Biases
+    # Initialize Weights & Biases with gym monitoring
     wandb.init(
         project=config.wandb_project,
         entity=config.wandb_entity,
@@ -127,15 +125,29 @@ def train(config):
             "entropy_bonus": getattr(config, "entropy_bonus", "None"),
             "epsilon": getattr(config, "epsilon", 0.0),
             "obs_buffer_max_len": obs_buffer_max_len,
+            "video_freq": config.video_freq,
         },
+        monitor_gym=True,  # Enable gym monitoring
     )
+
+    # Wrap environment with wandb video monitoring
+    env = gym.wrappers.RecordVideo(
+        env,
+        video_folder=f"videos/{wandb.run.id}",
+        episode_trigger=lambda episode_id: episode_id % config.video_freq == 0,
+        name_prefix="rl-video",
+    )
+
     state_size_flat = env.observation_space.shape[0] * obs_buffer_max_len
 
     # Get hyperparameters from config (with defaults)
     learning_rate = getattr(config, "learning_rate", 5e-4)
-    entropy_bonus = getattr(config, "entropy_bonus", "None")
-    # Convert string "None" to actual None
-
+    entropy_bonus_str = getattr(config, "entropy_bonus", "None")
+    entropy_bonus = (
+        None
+        if entropy_bonus_str == "None" or entropy_bonus_str is None
+        else float(entropy_bonus_str)
+    )
     epsilon = getattr(config, "epsilon", 0.0)
 
     agent = SAC(
@@ -158,29 +170,6 @@ def train(config):
         obs_buffer_max_len=obs_buffer_max_len,
     )
 
-    # Setup video recording for wandb
-    video_dir = "./logs"
-    if config.log_video:
-        try:
-            os.makedirs(video_dir, exist_ok=True)
-            # Use gym.wrappers.RecordVideo to capture videos
-            # Record every 10th episode
-            env = RecordVideo(
-                env,
-                video_dir,
-                episode_trigger=lambda episode_id: (
-                    episode_id % 10 == 0
-                ),  # Episodes 0, 10, 20, etc.
-                name_prefix="rl-video",
-            )
-            print(f"Video recording enabled. Videos will be saved to: {video_dir}")
-            print("Videos will be recorded for episodes: 10, 20, 30, ...")
-        except Exception as e:
-            print(f"Warning: Failed to enable video recording: {e}")
-            print("Install moviepy with: pip install moviepy")
-            print("Continuing without video recording...")
-            config.log_video = 0
-
     for i in range(1, config.episodes + 1):
         obs, info = env.reset()
 
@@ -201,12 +190,10 @@ def train(config):
             next_state = np.stack(obs_buffer, axis=0).flatten(order="C")
 
             done = terminated or truncated
-            ## WE GET TO ADD IN THIS LINE THE REWARDS FUNCTIONS DEPENDENT ON STATES AND EVEN ADD IN OUR STATE -> z LATENT SPACE EMBEDDING FUNCTION HERE
-            # Found that the reward function was best when it followed a normal distribution
-            # It helps with giving signal far away without highjacking the reward function (found + was better than - for some reason)
+            
+            # Custom reward shaping for CartPole
             mean = 1
             std = 1
-
             reward = reward + np.exp(-((state[0] - mean) ** 2) / (2 * std**2))
 
             buffer.add(state, action, reward, next_state, done)
@@ -223,81 +210,33 @@ def train(config):
         average10.append(rewards)
         total_steps += episode_steps
         print(
-            "Episode: {} | Reward: {} | Polciy Loss: {} | Steps: {}".format(
-                i,
-                rewards,
-                policy_loss,
-                steps,
-            )
+            f"Episode: {i} | Reward: {rewards:.2f} | Avg(10): {sum(average10)/len(average10):.2f} | "
+            f"Policy Loss: {policy_loss:.4f} | Steps: {steps}"
         )
 
         # Log metrics to Weights & Biases
-        wandb.log(
-            {
-                "episode": i,
-                "reward": rewards,
-                "avg_reward_10": sum(average10) / len(average10),
-                "total_steps": total_steps,
-                "policy_loss": policy_loss,
-                "alpha_loss": alpha_loss,
-                "bellmann_error1": bellmann_error1,
-                "bellmann_error2": bellmann_error2,
-                "current_alpha": current_alpha,
-                "episode_steps": episode_steps,
-                "buffer_size": len(buffer),
-            },
-            commit=True,
-        )
-
-        # Log videos (RecordVideo uses 0-based indexing, so episode i in our loop is episode i-1 for RecordVideo)
-        # Videos are recorded at episodes 10, 20, 30, etc. (in 1-based indexing)
-        if (i % 10 == 0) and config.log_video:
-            # Wait a moment for video to be fully written
-            time.sleep(2.0)
-
-            # Find all mp4 files in video directory
-            video_files = glob.glob(
-                os.path.join(video_dir, "**", "*.mp4"), recursive=True
-            )
-
-            if len(video_files) > 0:
-                # Get the most recent video file
-                video_path = max(video_files, key=os.path.getmtime)
-                print(f"Found video file: {video_path}")
-
-                # Verify file is complete and has content
-                try:
-                    file_size = os.path.getsize(video_path)
-                    if file_size > 0:
-                        # Log video to wandb
-                        try:
-                            wandb.log(
-                                {"video": wandb.Video(video_path, format="mp4")},
-                                commit=True,
-                            )
-                            print(f"✓ Video logged to wandb for episode {i}")
-                        except Exception as e:
-                            print(f"Warning: Failed to log video to wandb: {e}")
-                            print(f"  Video path: {video_path}")
-                            print(f"  File size: {file_size} bytes")
-                    else:
-                        print(f"Warning: Video file is empty: {video_path}")
-                except Exception as e:
-                    print(f"Warning: Error accessing video file: {e}")
-            else:
-                print(f"Warning: No video files found in {video_dir} for episode {i}")
-                # Debug: show what's in the directory
-                if os.path.exists(video_dir):
-                    all_files = glob.glob(
-                        os.path.join(video_dir, "**", "*"), recursive=True
-                    )
-                    print(f"  Files in video_dir: {all_files[:5]}")
+        log_dict = {
+            "episode": i,
+            "reward": rewards,
+            "avg_reward_10": sum(average10) / len(average10),
+            "total_steps": total_steps,
+            "policy_loss": policy_loss,
+            "alpha_loss": alpha_loss,
+            "bellmann_error1": bellmann_error1,
+            "bellmann_error2": bellmann_error2,
+            "current_alpha": current_alpha,
+            "episode_steps": episode_steps,
+            "buffer_size": len(buffer),
+        }
+        
+        # Wandb will automatically log videos from RecordVideo wrapper
+        wandb.log(log_dict)
 
         if i % config.save_every == 0:
             save(config, save_name="SAC_discrete", model=agent.actor_local, ep=0)
 
     # Close video recorder if it exists
-    if config.log_video and hasattr(env, "close_video_recorder"):
+    if hasattr(env, "close_video_recorder"):
         env.close_video_recorder()
 
     # Finish wandb run
@@ -308,3 +247,4 @@ def train(config):
 if __name__ == "__main__":
     config = get_config()
     train(config)
+
