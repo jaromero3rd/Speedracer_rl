@@ -21,7 +21,7 @@ class ResNetEncoder(nn.Module):
         super().__init__()
         # encoder
         self.resnet = resnet_setup()
-        # embedding in latent dim
+        # embedding in latent dim and learning mean and std of latent space
         self.mu = nn.Linear(512, latent_dim)
         self.logvar = nn.Linear(512, latent_dim)
 
