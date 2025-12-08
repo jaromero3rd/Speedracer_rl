@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 """
-Generate labeled vision dataset for CNN pre-training.
-Records videos of trained agents and saves corresponding state information.
-Each frame is paired with the true CartPole state: [x, x_dot, theta, theta_dot]
+Generate labeled vision dataset for supervised CNN training.
+Records frames from trained agents and saves corresponding state buffers.
+
+Output format:
+    frame_stacks: (N, 16, 224, 224, 3) - uint8 RGB images, channels-last
+    states: (N, 64) - float32, flattened observation buffer (16 timesteps x 4 state dims)
+
+The CNN will learn to predict the 64-dim state buffer from the 16 stacked frames.
 """
 
 import numpy as np
@@ -19,22 +24,28 @@ import pickle
 
 
 def generate_dataset(model_path: str, output_dir: str, num_episodes: int = 50,
-                     max_steps: int = 500, obs_buffer_max_len: int = 4,
-                     resize_shape: tuple = (224, 224), frame_stack: int = 4):
+                     max_steps: int = 500, agent_obs_buffer_len: int = 16,
+                     resize_shape: tuple = (224, 224), frame_stack: int = 16,
+                     output_state_dim: int = 64):
     """
-    Generate a dataset of (image, state) pairs from a trained agent.
+    Generate a dataset of (stacked frames, state buffer) pairs from a trained agent.
 
     Args:
         model_path: Path to saved actor model (.pth file)
         output_dir: Directory to save dataset
         num_episodes: Number of episodes to record
         max_steps: Maximum steps per episode
-        obs_buffer_max_len: Length of observation buffer (must match training)
+        agent_obs_buffer_len: Length of observation buffer for THIS agent (must match its training)
         resize_shape: Size to resize images (width, height)
-        frame_stack: Number of consecutive frames to stack (for velocity information)
+        frame_stack: Number of consecutive frames to stack for CNN input (always 16)
+        output_state_dim: Dimension of output state buffer for CNN labels (always 64)
 
     Returns:
         Dictionary with dataset statistics
+
+    Note:
+        frame_stack and output_state_dim should always be 16 and 64 respectively,
+        matching the target agent (073). agent_obs_buffer_len varies per agent.
     """
     model_name = os.path.splitext(os.path.basename(model_path))[0]
     dataset_dir = os.path.join(output_dir, model_name)
@@ -45,6 +56,9 @@ def generate_dataset(model_path: str, output_dir: str, num_episodes: int = 50,
     os.makedirs(images_dir, exist_ok=True)
     os.makedirs(states_dir, exist_ok=True)
 
+    # CNN output buffer is always 16 timesteps (64 dim)
+    cnn_obs_buffer_len = output_state_dim // 4  # 64 // 4 = 16
+
     print(f"=" * 80)
     print(f"Generating dataset from: {model_name}")
     print(f"=" * 80)
@@ -52,7 +66,9 @@ def generate_dataset(model_path: str, output_dir: str, num_episodes: int = 50,
     print(f"Output directory: {dataset_dir}")
     print(f"Episodes: {num_episodes}")
     print(f"Image size: {resize_shape[0]}x{resize_shape[1]}")
-    print(f"Frame stack: {frame_stack} frames")
+    print(f"Frame stack: {frame_stack} frames (CNN input)")
+    print(f"Agent obs buffer: {agent_obs_buffer_len} (for running this agent)")
+    print(f"CNN output dim: {output_state_dim} ({cnn_obs_buffer_len} timesteps x 4)")
     print(f"=" * 80 + "\n")
 
     # Create environment with RGB rendering
@@ -64,16 +80,15 @@ def generate_dataset(model_path: str, output_dir: str, num_episodes: int = 50,
 
     # Get sample observation to determine state size
     sample_obs, _ = env.reset()
-    state_size = sample_obs.shape[0] * obs_buffer_max_len
+    agent_state_size = sample_obs.shape[0] * agent_obs_buffer_len  # For running the agent
     action_size = env.action_space.n
 
-    print(f"State size: {state_size}")
+    print(f"Agent state size: {agent_state_size} ({agent_obs_buffer_len} x 4)")
     print(f"Action size: {action_size}")
-    print(f"Observation buffer length: {obs_buffer_max_len}\n")
 
-    # Create SAC agent
+    # Create SAC agent with its specific state size
     agent = SAC(
-        state_size=state_size,
+        state_size=agent_state_size,
         action_size=action_size,
         device=device,
         learning_rate=5e-4,
@@ -96,13 +111,15 @@ def generate_dataset(model_path: str, output_dir: str, num_episodes: int = 50,
         env.close()
         return None
 
-    # Storage for dataset
-    all_frame_stacks = []
-    all_states = []
+    # Storage for current chunk
+    chunk_frame_stacks = []
+    chunk_states = []
     episode_rewards = []
     episode_lengths = []
 
     total_frames = 0
+    chunk_idx = 0
+    episodes_per_chunk = 20  # Save every 20 episodes to limit memory usage
 
     print("Generating dataset...\n")
 
@@ -110,15 +127,18 @@ def generate_dataset(model_path: str, output_dir: str, num_episodes: int = 50,
         # Reset environment
         obs, info = env.reset()
 
-        # Initialize observation buffer (for RL agent)
-        obs_buffer = deque(maxlen=obs_buffer_max_len)
+        # Initialize observation buffer for AGENT (variable size per agent)
+        agent_obs_buffer = deque(maxlen=agent_obs_buffer_len)
+        for _ in range(agent_obs_buffer_len):
+            agent_obs_buffer.append(obs)
+        agent_state = np.stack(agent_obs_buffer, axis=0).flatten(order="C")
 
-        # Fill buffer with initial observation
-        for _ in range(obs_buffer_max_len):
-            obs_buffer.append(obs)
-        state = np.stack(obs_buffer, axis=0).flatten(order="C")
+        # Initialize observation buffer for CNN OUTPUT (always 16 timesteps = 64 dim)
+        cnn_obs_buffer = deque(maxlen=cnn_obs_buffer_len)
+        for _ in range(cnn_obs_buffer_len):
+            cnn_obs_buffer.append(obs)
 
-        # Initialize frame buffer (for CNN input)
+        # Initialize frame buffer (for CNN input, always 16 frames)
         frame_buffer = deque(maxlen=frame_stack)
 
         # Get initial frame and fill frame buffer
@@ -145,26 +165,29 @@ def generate_dataset(model_path: str, output_dir: str, num_episodes: int = 50,
             frame_buffer.append(frame)
 
             # Stack frames: (frame_stack, H, W, 3)
-            stacked_frames = np.array(frame_buffer)
+            stacked_frames = np.array(frame_buffer, dtype=np.uint8)
 
-            # Store stacked frames and current state
-            # Note: obs is the actual CartPole state [x, x_dot, theta, theta_dot]
-            all_frame_stacks.append(stacked_frames)
-            all_states.append(obs.copy())
+            # Get CNN label: flattened 16-timestep observation buffer (64 dim)
+            cnn_state = np.stack(cnn_obs_buffer, axis=0).flatten(order="C").astype(np.float32)
 
-            # Get action from agent
-            action = agent.get_action(state, training=False)
+            # Store stacked frames and CNN state label in chunk
+            chunk_frame_stacks.append(stacked_frames)
+            chunk_states.append(cnn_state)
+
+            # Get action from agent using ITS state representation
+            action = agent.get_action(agent_state, training=False)
 
             # Step environment
             next_obs, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
 
-            # Update observation buffer
-            obs_buffer.append(next_obs)
-            next_state = np.stack(obs_buffer, axis=0).flatten(order="C")
+            # Update BOTH observation buffers
+            agent_obs_buffer.append(next_obs)
+            cnn_obs_buffer.append(next_obs)
+
+            agent_state = np.stack(agent_obs_buffer, axis=0).flatten(order="C")
 
             obs = next_obs
-            state = next_state
             episode_reward += reward
             step_count += 1
             total_frames += 1
@@ -172,45 +195,69 @@ def generate_dataset(model_path: str, output_dir: str, num_episodes: int = 50,
         episode_rewards.append(episode_reward)
         episode_lengths.append(step_count)
 
-    env.close()
+        # Save chunk every N episodes to avoid memory issues
+        if (episode + 1) % episodes_per_chunk == 0:
+            chunk_frames_arr = np.array(chunk_frame_stacks, dtype=np.uint8)
+            chunk_states_arr = np.array(chunk_states, dtype=np.float32)
 
-    # Convert to numpy arrays
-    all_frame_stacks = np.array(all_frame_stacks, dtype=np.uint8)  # Shape: (N, frame_stack, H, W, 3)
-    all_states = np.array(all_states, dtype=np.float32)  # Shape: (N, 4)
+            chunk_file = os.path.join(dataset_dir, f'chunk_{chunk_idx:04d}.npz')
+            np.savez_compressed(chunk_file, frame_stacks=chunk_frames_arr, states=chunk_states_arr)
+
+            print(f"  Saved chunk {chunk_idx}: {len(chunk_frame_stacks)} samples")
+
+            # Clear chunk storage
+            chunk_frame_stacks = []
+            chunk_states = []
+            chunk_idx += 1
+
+    # Save any remaining data
+    if len(chunk_frame_stacks) > 0:
+        chunk_frames_arr = np.array(chunk_frame_stacks, dtype=np.uint8)
+        chunk_states_arr = np.array(chunk_states, dtype=np.float32)
+
+        chunk_file = os.path.join(dataset_dir, f'chunk_{chunk_idx:04d}.npz')
+        np.savez_compressed(chunk_file, frame_stacks=chunk_frames_arr, states=chunk_states_arr)
+
+        print(f"  Saved chunk {chunk_idx}: {len(chunk_frame_stacks)} samples")
+        chunk_idx += 1
+
+    env.close()
 
     print(f"\n" + "=" * 80)
     print(f"Dataset Generation Complete!")
     print(f"=" * 80)
     print(f"Total frames collected: {total_frames}")
-    print(f"Frame stacks shape: {all_frame_stacks.shape}")
-    print(f"States shape: {all_states.shape}")
+    print(f"Total chunks saved: {chunk_idx}")
     print(f"Average reward: {np.mean(episode_rewards):.2f} ± {np.std(episode_rewards):.2f}")
     print(f"Average episode length: {np.mean(episode_lengths):.1f} ± {np.std(episode_lengths):.1f}")
     print(f"=" * 80 + "\n")
 
-    # Save dataset
-    print("Saving dataset...")
-
-    # Save as compressed numpy arrays
-    np.savez_compressed(
-        os.path.join(dataset_dir, 'dataset.npz'),
-        frame_stacks=all_frame_stacks,
-        states=all_states
-    )
+    # Compute state stats by loading chunks one at a time
+    print("Computing state statistics...")
+    all_states_for_stats = []
+    for i in range(chunk_idx):
+        chunk_file = os.path.join(dataset_dir, f'chunk_{i:04d}.npz')
+        chunk_data = np.load(chunk_file)
+        all_states_for_stats.append(chunk_data['states'])
+    all_states_for_stats = np.concatenate(all_states_for_stats, axis=0)
 
     # Save metadata
     metadata = {
         'model_name': model_name,
         'num_episodes': num_episodes,
         'total_frames': total_frames,
-        'frame_stack_shape': list(all_frame_stacks.shape[1:]),
-        'state_dim': all_states.shape[1],
+        'num_chunks': chunk_idx,
+        'frame_stack_shape': [frame_stack, resize_shape[1], resize_shape[0], 3],
+        'state_dim': output_state_dim,
+        'agent_obs_buffer_len': agent_obs_buffer_len,
+        'cnn_obs_buffer_len': cnn_obs_buffer_len,
         'resize_shape': resize_shape,
         'frame_stack': frame_stack,
         'mean_reward': float(np.mean(episode_rewards)),
         'std_reward': float(np.std(episode_rewards)),
         'mean_length': float(np.mean(episode_lengths)),
-        'state_labels': ['cart_position', 'cart_velocity', 'pole_angle', 'pole_angular_velocity']
+        'state_labels': ['cart_position', 'cart_velocity', 'pole_angle', 'pole_angular_velocity'] * cnn_obs_buffer_len,
+        'state_format': f'flattened observation buffer: {cnn_obs_buffer_len} timesteps x 4 state dims = {output_state_dim} total'
     }
 
     with open(os.path.join(dataset_dir, 'metadata.json'), 'w') as f:
@@ -218,29 +265,30 @@ def generate_dataset(model_path: str, output_dir: str, num_episodes: int = 50,
 
     # Save statistics about the state distributions (useful for normalization)
     state_stats = {
-        'mean': all_states.mean(axis=0).tolist(),
-        'std': all_states.std(axis=0).tolist(),
-        'min': all_states.min(axis=0).tolist(),
-        'max': all_states.max(axis=0).tolist()
+        'mean': all_states_for_stats.mean(axis=0).tolist(),
+        'std': all_states_for_stats.std(axis=0).tolist(),
+        'min': all_states_for_stats.min(axis=0).tolist(),
+        'max': all_states_for_stats.max(axis=0).tolist()
     }
 
     with open(os.path.join(dataset_dir, 'state_stats.json'), 'w') as f:
         json.dump(state_stats, f, indent=2)
 
+    # Clean up stats array
+    del all_states_for_stats
+
     print(f"✓ Dataset saved to: {dataset_dir}")
-    print(f"  - dataset.npz (frame stacks and states)")
+    print(f"  - {chunk_idx} chunk files (chunk_0000.npz, chunk_0001.npz, ...)")
     print(f"  - metadata.json")
     print(f"  - state_stats.json")
-    print(f"\nDataset format:")
-    print(f"  frame_stacks: {all_frame_stacks.shape} - (N, {frame_stack}, {resize_shape[1]}, {resize_shape[0]}, 3)")
-    print(f"  states: {all_states.shape} - (N, 4) [x, x_dot, theta, theta_dot]")
+    print(f"\nDataset format (per chunk):")
+    print(f"  frame_stacks: (N, {frame_stack}, {resize_shape[1]}, {resize_shape[0]}, 3)")
+    print(f"  states: (N, {output_state_dim}) [{cnn_obs_buffer_len} timesteps x 4 state dims, flattened]")
 
-    # Print state statistics
-    print(f"\nState Statistics:")
-    print(f"  Mean: {state_stats['mean']}")
-    print(f"  Std:  {state_stats['std']}")
-    print(f"  Min:  {state_stats['min']}")
-    print(f"  Max:  {state_stats['max']}")
+    # Print state statistics (first 4 dims only for brevity)
+    print(f"\nState Statistics (first 4 dims):")
+    print(f"  Mean: {state_stats['mean'][:4]}")
+    print(f"  Std:  {state_stats['std'][:4]}")
     print("=" * 80 + "\n")
 
     return metadata
@@ -249,55 +297,58 @@ def generate_dataset(model_path: str, output_dir: str, num_episodes: int = 50,
 def main():
     """Main function."""
     parser = argparse.ArgumentParser(description='Generate vision dataset from trained CartPole agents')
-    parser.add_argument('--models', type=str, nargs='+',
-                        default=[
-                            'trained_models/grid_search_005SAC_discrete0.pth',
-                            'trained_models/grid_search_047SAC_discrete0.pth',
-                            'trained_models/grid_search_073SAC_discrete0.pth'
-                        ],
-                        help='Paths to saved actor model files')
     parser.add_argument('--output_dir', type=str, default='vision_dataset',
                         help='Directory to save datasets (default: vision_dataset)')
     parser.add_argument('--episodes', type=int, default=50,
                         help='Number of episodes to record per agent (default: 50)')
     parser.add_argument('--max_steps', type=int, default=500,
                         help='Maximum steps per episode (default: 500)')
-    parser.add_argument('--obs_buffer_len', type=int, default=16,
-                        help='Observation buffer length (must match training, default: 16)')
     parser.add_argument('--resize', type=int, nargs=2, default=[224, 224],
                         help='Resize images to WIDTH HEIGHT (default: 224 224)')
-    parser.add_argument('--frame_stack', type=int, default=16,
-                        help='Number of consecutive frames to stack (default: 16)')
 
     args = parser.parse_args()
+
+    # Define agents with their specific obs_buffer_len from grid search
+    # Model 005: obs_buffer=2, Model 047: obs_buffer=8, Model 073: obs_buffer=16
+    agents = [
+        ('trained_models/grid_search_005SAC_discrete0.pth', 2),
+        ('trained_models/grid_search_047SAC_discrete0.pth', 8),
+        ('trained_models/grid_search_073SAC_discrete0.pth', 16),
+    ]
 
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
 
     resize_shape = tuple(args.resize)
 
+    # Fixed CNN parameters (always 16 frames -> 64 dim output)
+    frame_stack = 16
+    output_state_dim = 64
+
     print("\n" + "=" * 80)
     print("CartPole Vision Dataset Generation")
     print("=" * 80)
-    print(f"Number of agents: {len(args.models)}")
+    print(f"Number of agents: {len(agents)}")
     print(f"Episodes per agent: {args.episodes}")
     print(f"Image resolution: {resize_shape[0]}x{resize_shape[1]}")
-    print(f"Frame stack: {args.frame_stack} consecutive frames")
+    print(f"Frame stack: {frame_stack} consecutive frames (CNN input)")
+    print(f"Output state dim: {output_state_dim} (CNN output)")
     print(f"Output directory: {args.output_dir}")
     print("=" * 80 + "\n")
 
     results = []
 
     try:
-        for model_path in args.models:
+        for model_path, agent_obs_buffer_len in agents:
             result = generate_dataset(
                 model_path=model_path,
                 output_dir=args.output_dir,
                 num_episodes=args.episodes,
                 max_steps=args.max_steps,
-                obs_buffer_max_len=args.obs_buffer_len,
+                agent_obs_buffer_len=agent_obs_buffer_len,
                 resize_shape=resize_shape,
-                frame_stack=args.frame_stack
+                frame_stack=frame_stack,
+                output_state_dim=output_state_dim
             )
             if result:
                 results.append(result)
