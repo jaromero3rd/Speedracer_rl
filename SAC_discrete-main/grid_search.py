@@ -11,12 +11,13 @@ import json
 from datetime import datetime
 import argparse
 
-def run_training(config_dict, run_id, base_log_dir="./logs", env="CartPole-v1", seed=1):
+def run_training(config_dict, run_id, run_name, base_log_dir="./logs", env="CartPole-v1", seed=1):
     """Run a single training configuration.
     
     Args:
         config_dict: Dictionary with hyperparameters
         run_id: Unique identifier for this run
+        run_name: Name for this run
         base_log_dir: Base directory for logs
         env: Environment name
         seed: Random seed
@@ -27,14 +28,14 @@ def run_training(config_dict, run_id, base_log_dir="./logs", env="CartPole-v1", 
     # Build command
     cmd = [
         "python", "train.py",
-        "--run_name", f"grid_search_{run_id}",
+        "--run_name", run_name,
         "--episodes", "100",
-        "--log_dir", base_log_dir,
         "--env", env,
         "--seed", str(seed),
         "--learning_rate", str(config_dict["learning_rate"]),
         "--epsilon", str(config_dict["epsilon"]),
         "--obs_buffer_max_len", str(config_dict["obs_buffer_max_len"]),
+        "--buffer_init_method", config_dict["buffer_init_method"],
     ]
     
     # Add entropy_bonus (always add it, use "None" string if None)
@@ -45,33 +46,30 @@ def run_training(config_dict, run_id, base_log_dir="./logs", env="CartPole-v1", 
     
     print(f"\n{'='*80}")
     print(f"Running configuration {run_id}:")
+    print(f"  run_name: {run_name}")
     print(f"  obs_buffer_max_len: {config_dict['obs_buffer_max_len']}")
     print(f"  learning_rate: {config_dict['learning_rate']}")
     print(f"  entropy_bonus: {config_dict['entropy_bonus']}")
     print(f"  epsilon: {config_dict['epsilon']}")
+    print(f"  buffer_init_method: {config_dict['buffer_init_method']}")
     print(f"{'='*80}\n")
     
     # Run training
     try:
+        # Don't capture output so tqdm progress bars are visible in real-time
         result = subprocess.run(
             cmd,
-            capture_output=True,
-            text=True,
             check=True
         )
         
-        # Parse output to extract final metrics (if available)
-        # You may need to adjust this based on your actual output format
-        output = result.stdout
         return {
             "status": "success",
-            "output": output,
+            "output": "Training completed (output not captured to show tqdm progress)",
             "config": config_dict,
             "run_id": run_id
         }
     except subprocess.CalledProcessError as e:
         print(f"ERROR: Training failed for configuration {run_id}")
-        print(f"Error output: {e.stderr}")
         return {
             "status": "failed",
             "error": str(e),
@@ -88,17 +86,19 @@ def main():
     args = parser.parse_args()
     
     # Define hyperparameter grids
-    obs_buffer_max_lens = [2, 8, 16]
-    learning_rates = [1e-4, 5e-4, 1e-3]
-    entropy_bonuses = [None, 0.2, 0.4]  # None = learnable
-    epsilons = [0.0, 0.2, 0.4]
+    obs_buffer_max_lens = [1, 2, 4, 8, 16]
+    learning_rates = [5e-4]  # Default learning rate
+    entropy_bonuses = [0, 0.2]
+    epsilons = [0, 0.1]
+    buffer_init_methods = ["random"]  # Fixed to random actor initialization
     
     # Create grid of all combinations
     grid = list(itertools.product(
         obs_buffer_max_lens,
         learning_rates,
         entropy_bonuses,
-        epsilons
+        epsilons,
+        buffer_init_methods
     ))
     
     print(f"\n{'='*80}")
@@ -112,6 +112,7 @@ def main():
     print(f"  learning_rate: {learning_rates}")
     print(f"  entropy_bonus: {entropy_bonuses}")
     print(f"  epsilon: {epsilons}")
+    print(f"  buffer_init_method: {buffer_init_methods} (fixed)")
     print(f"{'='*80}\n")
     
     # Create results directory
@@ -125,6 +126,7 @@ def main():
         "learning_rates": learning_rates,
         "entropy_bonuses": entropy_bonuses,
         "epsilons": epsilons,
+        "buffer_init_methods": buffer_init_methods,
         "total_configs": len(grid),
         "episodes_per_config": 100,
         "timestamp": timestamp,
@@ -140,30 +142,33 @@ def main():
     
     # Run each configuration
     results = []
-    for idx, (obs_buf_len, lr, ent_bonus, eps) in enumerate(grid, 1):
+    for idx, (obs_buf_len, lr, ent_bonus, eps, buffer_method) in enumerate(grid, 1):
         config_dict = {
             "obs_buffer_max_len": obs_buf_len,
             "learning_rate": lr,
             "entropy_bonus": ent_bonus,
-            "epsilon": eps
+            "epsilon": eps,
+            "buffer_init_method": buffer_method
         }
         
         run_id = f"{idx:03d}"
+        # Create run name with descriptive parameters
+        run_name = f"grid_search_obs{obs_buf_len}_eps{eps}_ent{ent_bonus}_{run_id}"
         
         # Store hyperparameter mapping
         # The actual log directory will be created by train.py with format: {run_name}_{timestamp}
-        # run_name is "grid_search_{run_id}", so the directory will be "grid_search_{run_id}_{timestamp}"
         hyperparameter_mapping[run_id] = {
             "run_id": run_id,
             "obs_buffer_max_len": obs_buf_len,
             "learning_rate": lr,
             "entropy_bonus": ent_bonus if ent_bonus is not None else "learnable",
             "epsilon": eps,
-            "run_name": f"grid_search_{run_id}",
+            "buffer_init_method": buffer_method,
+            "run_name": run_name,
             "note": "TensorBoard log directory format: {run_name}_{timestamp} in base log_dir"
         }
         
-        result = run_training(config_dict, run_id, args.log_dir, args.env, args.seed)
+        result = run_training(config_dict, run_id, run_name, args.log_dir, args.env, args.seed)
         results.append(result)
         
         # Save intermediate results and hyperparameter mapping
@@ -178,7 +183,7 @@ def main():
         csv_file = os.path.join(results_dir, "hyperparameter_mapping.csv")
         with open(csv_file, 'w', newline='') as f:
             writer = csv.DictWriter(f, fieldnames=['run_id', 'obs_buffer_max_len', 'learning_rate', 
-                                                   'entropy_bonus', 'epsilon', 'run_name'])
+                                                   'entropy_bonus', 'epsilon', 'buffer_init_method', 'run_name'])
             writer.writeheader()
             for run_id, params in sorted(hyperparameter_mapping.items(), key=lambda x: int(x[0])):
                 # Create a row without the 'note' field
