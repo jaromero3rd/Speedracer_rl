@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import torch.nn as nn
 from torch.nn.utils import clip_grad_norm_
 from networks import Critic, Actor
+from utils import RNDTargetNetwork, RNDPredictorNetwork, compute_rnd_intrinsic_reward
 import copy
 import numpy as np
 
@@ -17,7 +18,9 @@ class SAC(nn.Module):
                         device,
                         learning_rate=5e-4,
                         entropy_bonus=None,
-                        epsilon=0.0
+                        epsilon=0.0,
+                        use_rnd=False,
+                        rnd_learning_rate=1e-3
                 ):
         """Initialize an Agent object.
         
@@ -72,7 +75,18 @@ class SAC(nn.Module):
         self.critic2_target.load_state_dict(self.critic2.state_dict())
 
         self.critic1_optimizer = optim.Adam(self.critic1.parameters(), lr=learning_rate)
-        self.critic2_optimizer = optim.Adam(self.critic2.parameters(), lr=learning_rate) 
+        self.critic2_optimizer = optim.Adam(self.critic2.parameters(), lr=learning_rate)
+        
+        # RND networks (optional, for intrinsic motivation)
+        self.use_rnd = use_rnd
+        if use_rnd:
+            self.rnd_target = RNDTargetNetwork(state_size, feature_size=8, hidden_size=128).to(device)
+            self.rnd_predictor = RNDPredictorNetwork(state_size, feature_size=8, hidden_size=128).to(device)
+            self.rnd_optimizer = optim.Adam(self.rnd_predictor.parameters(), lr=rnd_learning_rate)
+        else:
+            self.rnd_target = None
+            self.rnd_predictor = None
+            self.rnd_optimizer = None 
 
     
     def get_action(self, state, training=True):
@@ -190,8 +204,35 @@ class SAC(nn.Module):
         self.soft_update(self.critic1, self.critic1_target)
         self.soft_update(self.critic2, self.critic2_target)
         
-        return actor_loss.item(), alpha_loss_value, critic1_loss.item(), critic2_loss.item(), current_alpha
+        # ----------------------- update RND predictor (if enabled) ----------- #
+        rnd_loss_value = 0.0
+        if self.use_rnd and self.rnd_predictor is not None:
+            with torch.no_grad():
+                target_features = self.rnd_target(states)
+            predicted_features = self.rnd_predictor(states)
+            rnd_loss = F.mse_loss(predicted_features, target_features)
+            self.rnd_optimizer.zero_grad()
+            rnd_loss.backward()
+            self.rnd_optimizer.step()
+            rnd_loss_value = rnd_loss.item()
+        
+        return actor_loss.item(), alpha_loss_value, critic1_loss.item(), critic2_loss.item(), current_alpha, rnd_loss_value
 
+    def compute_rnd_intrinsic_reward(self, state):
+        """Compute RND intrinsic reward for a given state.
+        
+        Args:
+            state: State tensor of shape (batch, state_size) or numpy array
+            
+        Returns:
+            intrinsic_reward: Scalar intrinsic reward (0.0 if RND not enabled)
+        """
+        if not self.use_rnd or self.rnd_target is None:
+            return 0.0
+        
+        # Use shared utility function
+        return compute_rnd_intrinsic_reward(self.rnd_target, self.rnd_predictor, state, self.device)
+    
     def soft_update(self, local_model , target_model):
         """Soft update model parameters.
         θ_target = τ*θ_local + (1 - τ)*θ_target
