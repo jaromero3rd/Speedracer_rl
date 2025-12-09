@@ -2,9 +2,6 @@ wandb/
 vision_batches/
 vision_dataset/
 figures/
-trained_cnn/
-trained_models/
-videos/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
