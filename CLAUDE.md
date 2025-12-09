@@ -15,8 +15,6 @@ pip install -r requirements.txt
 
 ### Training
 ```bash
-cd SAC_discrete-main
-
 # Train SAC agent on CartPole
 python train.py --env CartPole-v1 --episodes 500 --run_name my_run
 
@@ -34,14 +32,11 @@ python train.py --env CartPole-v1 --episodes 500 --run_name my_run
 
 ### Hyperparameter Grid Search
 ```bash
-cd SAC_discrete-main
 python grid_search.py
 ```
 
 ### Vision Pipeline (CNN Encoder Training)
 ```bash
-cd SAC_discrete-main
-
 # Generate dataset from trained agents
 python generate_vision_dataset.py --episodes 200 --obs_buffer_len 16 --frame_stack 4 --output_dir vision_dataset
 
@@ -51,7 +46,7 @@ python train_cnn_encoder.py --data_dir vision_dataset --output_dir trained_cnn -
 
 ### TensorBoard
 ```bash
-tensorboard --logdir SAC_discrete-main/logs
+tensorboard --logdir logs
 ```
 
 ## Architecture
@@ -84,20 +79,27 @@ The agent can stack multiple consecutive observations (`--obs_buffer_max_len`) t
 | `grid_search.py` | Hyperparameter search |
 | `generate_vision_dataset.py` | Generate image dataset from trained agents |
 | `train_cnn_encoder.py` | Train CNN to predict states from images |
+| `vision_network.py` | CNN encoder architecture |
+| `run_vision_agent.py` | Run vision-based agent |
+| `compare_agents.py` | Compare agent performance |
 | `logging_utils.py` | TensorBoard logging utilities |
 
 ## Directory Structure
 
 ```
-SAC_discrete-main/
+Speedracer_rl/
 ├── train.py                    # Main training script
 ├── agent.py                    # SAC agent
 ├── networks.py                 # Actor/Critic networks
 ├── buffer.py                   # Replay buffer
+├── vision_network.py           # CNN encoder
 ├── grid_search.py              # Hyperparameter search
 ├── generate_vision_dataset.py  # Vision dataset generation
 ├── train_cnn_encoder.py        # CNN encoder training
+├── run_vision_agent.py         # Vision-based agent runner
+├── compare_agents.py           # Agent comparison
 ├── trained_models/             # Saved model checkpoints
+├── trained_cnn/                # CNN encoder weights
 └── logs/                       # TensorBoard logs
 ```
 

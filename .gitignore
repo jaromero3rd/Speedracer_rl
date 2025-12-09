@@ -1,5 +1,10 @@
-wandb
-
+wandb/
+vision_batches/
+vision_dataset/
+figures/
+trained_cnn/
+trained_models/
+videos/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -32,8 +37,7 @@ MANIFEST
 runs/
 logs/
 fovean/
-SAC_discrete-main/grid_search_logs/
-SAC_discrete-main/trained_models/
+grid_search_logs/
 
 # PyInstaller
 #  Usually these files are written by a python script from a template

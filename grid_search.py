@@ -26,7 +26,7 @@ def run_training(config_dict, run_id, base_log_dir="./logs", env="CartPole-v1", 
     """
     # Build command
     cmd = [
-        "python", "race_train.py",
+        "python", "train.py",
         "--run_name", f"grid_search_{run_id}",
         "--episodes", "100",
         "--log_dir", base_log_dir,

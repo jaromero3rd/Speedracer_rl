@@ -1,98 +1,114 @@
+"""
+Supervised CNN encoder for CartPole state prediction.
+Uses ResNet18 architecture trained from scratch.
+
+Input: (B, 48, 224, 224) - 16 stacked RGB frames, channels concatenated
+Output: (B, 64) - flattened observation buffer (16 timesteps x 4 state dims)
+"""
+
 import torch
 import torch.nn as nn
-from torchvision.models import ResNet, resnet34
+from torchvision.models import resnet18, resnet34
 
 
-def resnet_setup() -> ResNet:
-    # might need to make smaller for faster training,
-    model: ResNet = resnet34(weights=None)
-    # 16 x 3 x 224 x 224 input
-    model.conv1 = nn.Conv2d(48, 64, kernel_size=7, stride=2, padding=3)
-    # output raw features
-    model.fc.out_features = model.fc.in_features
-    model.fc.weight.data = torch.eye(model.fc.in_features).requires_grad_(False)
-    model.fc.bias.data.zero_().requires_grad_(False)
+class ResNetStateEncoder(nn.Module):
+    """ResNet encoder for predicting CartPole state buffer from stacked frames."""
 
-    return model
-
-
-class ResNetEncoder(nn.Module):
-    def __init__(self, latent_dim=128) -> None:
-        super().__init__()
-        # encoder
-        self.resnet = resnet_setup()
-        # embedding in latent dim
-        self.mu = nn.Linear(512, latent_dim)
-        self.logvar = nn.Linear(512, latent_dim)
-
-    def forward(self, x):
-        if x.shape == (-1, 16, 3, 224, 224):
-            x = x.reshape(-1, 48, 224, 224)
-        elif x.shape != (48, 224, 224):
-            raise ValueError(f"{self._get_name()} receieved wrong shape {x.shape}")
-
-        features = self.resnet(x)
-        return self.mu(features), self.logvar(features)
-
-
-class ResNetDecoder(nn.Module):
-    def __init__(self, latent_dim=128):
+    def __init__(self, input_channels=48, output_dim=64, backbone='resnet18'):
+        """
+        Args:
+            input_channels: Number of input channels (48 = 16 frames x 3 RGB)
+            output_dim: Output dimension (64 = 16 timesteps x 4 state dims)
+            backbone: 'resnet18' or 'resnet34'
+        """
         super().__init__()
 
-        self.latent_dim = latent_dim
+        self.input_channels = input_channels
+        self.output_dim = output_dim
 
-        self.fc = nn.Linear(latent_dim, 512 * 7 * 7)
+        # Load backbone
+        if backbone == 'resnet18':
+            self.resnet = resnet18(weights=None)
+            self.feature_dim = 512
+        elif backbone == 'resnet34':
+            self.resnet = resnet34(weights=None)
+            self.feature_dim = 512
+        else:
+            raise ValueError(f"Unknown backbone: {backbone}")
 
-        # Mirror ResNet downsampling with ConvTranspose
-        self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(
-                512, 256, kernel_size=3, stride=2, padding=1, output_padding=1
-            ),  # 7→14
-            nn.BatchNorm2d(256),
-            nn.ReLU(True),
-            nn.ConvTranspose2d(
-                256, 128, kernel_size=3, stride=2, padding=1, output_padding=1
-            ),  # 14→28
-            nn.BatchNorm2d(128),
-            nn.ReLU(True),
-            nn.ConvTranspose2d(
-                128, 64, kernel_size=3, stride=2, padding=1, output_padding=1
-            ),  # 28→56
-            nn.BatchNorm2d(64),
-            nn.ReLU(True),
-            nn.ConvTranspose2d(
-                64, 32, kernel_size=3, stride=2, padding=1, output_padding=1
-            ),  # 56→112
-            nn.BatchNorm2d(32),
-            nn.ReLU(True),
-            nn.ConvTranspose2d(
-                32, 48, kernel_size=3, stride=2, padding=1, output_padding=1
-            ),  # 112→224
-            nn.Sigmoid(),  # pixel values in [0,1]
+        # Modify first conv layer for 48 input channels
+        self.resnet.conv1 = nn.Conv2d(
+            input_channels, 64,
+            kernel_size=7, stride=2, padding=3, bias=False
         )
 
-    def forward(self, z):
-        batch = z.shape[0]
-        x = self.fc(z)
-        x = x.view(batch, 512, 7, 7)  # match start of decoder
-        x = self.decoder(x)
-        # Output: (B, 48, 224, 224)
+        # Replace final FC layer to output 64 dims
+        self.resnet.fc = nn.Linear(self.feature_dim, output_dim)
+
+    def forward(self, x):
+        """
+        Args:
+            x: (B, 48, 224, 224) - stacked RGB frames
+        Returns:
+            state: (B, 64) - predicted state buffer
+        """
+        return self.resnet(x)
+
+    def get_features(self, x):
+        """
+        Get intermediate features (512-dim) before final FC layer.
+        Useful for extracting embeddings.
+
+        Args:
+            x: (B, 48, 224, 224)
+        Returns:
+            features: (B, 512)
+        """
+        x = self.resnet.conv1(x)
+        x = self.resnet.bn1(x)
+        x = self.resnet.relu(x)
+        x = self.resnet.maxpool(x)
+
+        x = self.resnet.layer1(x)
+        x = self.resnet.layer2(x)
+        x = self.resnet.layer3(x)
+        x = self.resnet.layer4(x)
+
+        x = self.resnet.avgpool(x)
+        x = torch.flatten(x, 1)
+
         return x
 
 
-class ResNetVAE(nn.Module):
-    def __init__(self, latent_dim=128):
-        super().__init__()
-        self.encoder = ResNetEncoder(latent_dim)
-        self.decoder = ResNetDecoder(latent_dim)
+def create_encoder(backbone='resnet18'):
+    """Factory function to create encoder with default settings."""
+    return ResNetStateEncoder(
+        input_channels=48,  # 16 frames x 3 RGB
+        output_dim=64,      # 16 timesteps x 4 state dims
+        backbone=backbone
+    )
 
-    def reparameterize(self, mu, logvar):
-        std = torch.exp(logvar * 0.5)
-        eps = torch.randn_like(std)
-        return mu + eps * std
 
-    def forward(self, x):
-        mu, logvar = self.encoder(x)
-        z = self.reparameterize(mu, logvar)
-        recon = self.decoder(z)
-        return recon, mu, logvar
+if __name__ == "__main__":
+    # Test the network
+    model = create_encoder('resnet18')
+
+    # Count parameters
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+    print(f"ResNet18 State Encoder")
+    print(f"  Input: (B, 48, 224, 224)")
+    print(f"  Output: (B, 64)")
+    print(f"  Total parameters: {total_params:,}")
+    print(f"  Trainable parameters: {trainable_params:,}")
+
+    # Test forward pass
+    x = torch.randn(2, 48, 224, 224)
+    y = model(x)
+    print(f"\n  Test input shape: {x.shape}")
+    print(f"  Test output shape: {y.shape}")
+
+    # Test feature extraction
+    features = model.get_features(x)
+    print(f"  Feature shape: {features.shape}")
