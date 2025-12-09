@@ -30,10 +30,25 @@ pip install -r requirements.txt
 
 ## Quick Start
 
-### 1. Run Pre-trained Vision Agent
+### 1. Run Pre-trained Agents
 ```bash
-# Uses the trained CNN encoder + SAC agent to balance CartPole from pixels
-python run_vision_agent.py --episodes 10
+# List available agents
+python run_agent.py --list-agents
+
+# Run with ground-truth state (perfect performance)
+python run_agent.py --mode state --episodes 10
+
+# Run with vision (CNN-predicted state from pixels)
+python run_agent.py --mode vision --episodes 10
+
+# Use noise-trained agent (more robust to CNN errors)
+python run_agent.py --mode vision --agent noise2 --episodes 10
+
+# Show live rendering window
+python run_agent.py --mode state --render
+
+# Save video to file
+python run_agent.py --mode state --episodes 1 --save_video demo.mp4
 ```
 
 ### 2. Compare Agents (Standard vs Noise-Trained)
@@ -105,8 +120,8 @@ python run_vision_agent.py \
 
 | Script | Purpose |
 |--------|---------|
+| `run_agent.py` | **Main entry point** - run agents in state or vision mode |
 | `train.py` | Train SAC agent on CartPole |
-| `run_vision_agent.py` | Run agent with CNN encoder |
 | `compare_agents.py` | Compare standard vs noise-trained agents |
 | `generate_vision_dataset.py` | Collect frame-state pairs |
 | `train_cnn_batches.py` | Train CNN encoder |
@@ -151,7 +166,7 @@ Speedracer_rl/
 ├── networks.py              # Actor/Critic networks
 ├── buffer.py                # Replay buffer
 ├── vision_network.py        # CNN encoder (ResNet18)
-├── run_vision_agent.py      # Vision-based control
+├── run_agent.py             # Main entry point (state/vision modes)
 ├── compare_agents.py        # Agent comparison
 ├── generate_vision_dataset.py
 ├── train_cnn_batches.py
